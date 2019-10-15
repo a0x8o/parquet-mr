@@ -1,0 +1,21 @@
+*.class
+.project
+.classpath
+.settings
+target
+# Package Files #
+*.jar
+*.war
+*.ear
+*.iml
+*.ipr
+*.iws
+*.orig
+*.rej
+dependency-reduced-pom.xml
+parquet-scrooge/.cache
+.idea/*
+target/
+.cache
+*~
+mvn_install.log
