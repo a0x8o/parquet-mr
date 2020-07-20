@@ -34,9 +34,11 @@ import static org.apache.parquet.schema.LogicalTypeAnnotation.mapType;
 import static org.apache.parquet.schema.LogicalTypeAnnotation.stringType;
 import static org.apache.parquet.schema.LogicalTypeAnnotation.timeType;
 import static org.apache.parquet.schema.LogicalTypeAnnotation.timestampType;
+import static org.apache.parquet.schema.LogicalTypeAnnotation.uuidType;
 import static org.apache.parquet.schema.MessageTypeParser.parseMessageType;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
@@ -67,11 +69,14 @@ import java.util.TreeSet;
 
 import com.google.common.collect.Sets;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.UTF8;
 import org.apache.parquet.FixedBinaryTestUtils;
 import org.apache.parquet.Version;
 import org.apache.parquet.bytes.BytesUtils;
 import org.apache.parquet.column.ColumnDescriptor;
+import org.apache.parquet.column.Encoding;
+import org.apache.parquet.column.EncodingStats;
 import org.apache.parquet.column.ParquetProperties;
 import org.apache.parquet.column.statistics.BinaryStatistics;
 import org.apache.parquet.column.statistics.BooleanStatistics;
@@ -80,8 +85,17 @@ import org.apache.parquet.column.statistics.FloatStatistics;
 import org.apache.parquet.column.statistics.IntStatistics;
 import org.apache.parquet.column.statistics.LongStatistics;
 import org.apache.parquet.column.statistics.Statistics;
+import org.apache.parquet.example.data.Group;
+import org.apache.parquet.example.data.simple.SimpleGroup;
 import org.apache.parquet.format.DecimalType;
 import org.apache.parquet.format.LogicalType;
+import org.apache.parquet.format.MapType;
+import org.apache.parquet.format.StringType;
+import org.apache.parquet.format.Util;
+import org.apache.parquet.hadoop.ParquetReader;
+import org.apache.parquet.hadoop.ParquetWriter;
+import org.apache.parquet.hadoop.example.ExampleParquetWriter;
+import org.apache.parquet.hadoop.example.GroupReadSupport;
 import org.apache.parquet.hadoop.metadata.BlockMetaData;
 import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
 import org.apache.parquet.hadoop.metadata.ColumnPath;
@@ -96,6 +110,7 @@ import org.apache.parquet.io.api.Binary;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.junit.Assert;
+import org.junit.Rule;
 import org.junit.Test;
 import org.apache.parquet.example.Paper;
 import org.apache.parquet.format.ColumnChunk;
@@ -116,6 +131,7 @@ import org.apache.parquet.schema.Type.Repetition;
 import org.apache.parquet.schema.Types;
 
 import com.google.common.collect.Lists;
+import org.junit.rules.TemporaryFolder;
 
 public class TestParquetMetadataConverter {
   private static SecureRandom random = new SecureRandom();
@@ -123,6 +139,9 @@ public class TestParquetMetadataConverter {
   private static final String CHAR_UPPER = CHAR_LOWER.toUpperCase();
   private static final String NUMBER = "0123456789";
   private static final String DATA_FOR_RANDOM_STRING = CHAR_LOWER + CHAR_UPPER + NUMBER;
+
+  @Rule
+  public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
   @Test
   public void testPageHeader() throws IOException {
@@ -174,6 +193,65 @@ public class TestParquetMetadataConverter {
             .setPrecision(9).setScale(2)
     );
     Assert.assertEquals(expected, schemaElements);
+  }
+
+  @Test
+  public void testParquetMetadataConverterWithDictionary()
+    throws IOException {
+    ParquetMetadata parquetMetaData =
+      createParquetMetaData(Encoding.PLAIN_DICTIONARY, Encoding.PLAIN);
+
+    ParquetMetadataConverter converter = new ParquetMetadataConverter();
+    FileMetaData fmd1 = converter.toParquetMetadata(1, parquetMetaData);
+
+    // Flag should be true
+    fmd1.row_groups.forEach(rowGroup -> rowGroup.columns.forEach(column -> {
+      assertTrue(column.meta_data.isSetDictionary_page_offset());
+    }));
+
+    ByteArrayOutputStream metaDataOutputStream = new ByteArrayOutputStream();
+    Util.writeFileMetaData(fmd1, metaDataOutputStream);
+    ByteArrayInputStream metaDataInputStream =
+      new ByteArrayInputStream(metaDataOutputStream.toByteArray());
+    FileMetaData fmd2 = Util.readFileMetaData(metaDataInputStream);
+    ParquetMetadata parquetMetaDataConverted =
+      converter.fromParquetMetadata(fmd2);
+
+    long dicOffsetOriginal =
+      parquetMetaData.getBlocks().get(0).getColumns().get(0)
+        .getDictionaryPageOffset();
+    long dicOffsetConverted =
+      parquetMetaDataConverted.getBlocks().get(0).getColumns().get(0)
+        .getDictionaryPageOffset();
+
+    Assert.assertEquals(dicOffsetOriginal, dicOffsetConverted);
+  }
+
+  @Test
+  public void testParquetMetadataConverterWithoutDictionary()
+    throws IOException {
+    ParquetMetadata parquetMetaData =
+      createParquetMetaData(null, Encoding.PLAIN);
+
+    ParquetMetadataConverter converter = new ParquetMetadataConverter();
+    FileMetaData fmd1 = converter.toParquetMetadata(1, parquetMetaData);
+
+    // Flag should be false
+    fmd1.row_groups.forEach(rowGroup -> rowGroup.columns.forEach(column -> {
+      assertFalse(column.meta_data.isSetDictionary_page_offset());
+    }));
+
+    ByteArrayOutputStream metaDataOutputStream = new ByteArrayOutputStream();
+    Util.writeFileMetaData(fmd1, metaDataOutputStream);
+    ByteArrayInputStream metaDataInputStream =
+      new ByteArrayInputStream(metaDataOutputStream.toByteArray());
+    FileMetaData fmd2 = Util.readFileMetaData(metaDataInputStream);
+    ParquetMetadata pmd2 = converter.fromParquetMetadata(fmd2);
+
+    long dicOffsetConverted =
+      pmd2.getBlocks().get(0).getColumns().get(0).getDictionaryPageOffset();
+
+    Assert.assertEquals(0, dicOffsetConverted);
   }
 
   @Test
@@ -295,6 +373,8 @@ public class TestParquetMetadataConverter {
     assertEquals(ConvertedType.INTERVAL, parquetMetadataConverter.convertToConvertedType(LogicalTypeAnnotation.IntervalLogicalTypeAnnotation.getInstance()));
     assertEquals(ConvertedType.JSON, parquetMetadataConverter.convertToConvertedType(jsonType()));
     assertEquals(ConvertedType.BSON, parquetMetadataConverter.convertToConvertedType(bsonType()));
+
+    assertNull(parquetMetadataConverter.convertToConvertedType(uuidType()));
 
     assertEquals(ConvertedType.LIST, parquetMetadataConverter.convertToConvertedType(listType()));
     assertEquals(ConvertedType.MAP, parquetMetadataConverter.convertToConvertedType(mapType()));
@@ -1053,6 +1133,34 @@ public class TestParquetMetadataConverter {
     return stats;
   }
 
+  private static ParquetMetadata createParquetMetaData(Encoding dicEncoding,
+    Encoding dataEncoding) {
+    MessageType schema =
+      parseMessageType("message schema { optional int32 col (INT_32); }");
+    org.apache.parquet.hadoop.metadata.FileMetaData fileMetaData =
+      new org.apache.parquet.hadoop.metadata.FileMetaData(schema,
+        new HashMap<String, String>(), null);
+    List<BlockMetaData> blockMetaDataList = new ArrayList<BlockMetaData>();
+    BlockMetaData blockMetaData = new BlockMetaData();
+    EncodingStats.Builder builder = new EncodingStats.Builder();
+    if (dicEncoding!= null) {
+      builder.addDictEncoding(dicEncoding).build();
+    }
+    builder.addDataEncoding(dataEncoding);
+    EncodingStats es = builder.build();
+    Set<org.apache.parquet.column.Encoding> e =
+      new HashSet<org.apache.parquet.column.Encoding>();
+    PrimitiveTypeName t = PrimitiveTypeName.INT32;
+    ColumnPath p = ColumnPath.get("col");
+    CompressionCodecName c = CompressionCodecName.UNCOMPRESSED;
+    BinaryStatistics s = new BinaryStatistics();
+    ColumnChunkMetaData md =
+      ColumnChunkMetaData.get(p, t, c, es, e, s, 20, 30, 0, 0, 0);
+    blockMetaData.addColumn(md);
+    blockMetaDataList.add(blockMetaData);
+    return new ParquetMetadata(fileMetaData, blockMetaDataList);
+  }
+
   private enum StatsHelper {
     // Only min and max are filled (min_value and max_value are not)
     V1() {
@@ -1167,5 +1275,95 @@ public class TestParquetMetadataConverter {
     assertNull("Should ignore unsupported types",
         ParquetMetadataConverter.fromParquetColumnIndex(Types.required(PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY)
             .length(12).as(OriginalType.INTERVAL).named("test_interval"), parquetColumnIndex));
+  }
+
+  @Test
+  public void testMapLogicalType() {
+    ParquetMetadataConverter parquetMetadataConverter = new ParquetMetadataConverter();
+    MessageType expected = Types.buildMessage()
+      .requiredGroup().as(mapType())
+      .repeatedGroup().as(LogicalTypeAnnotation.MapKeyValueTypeAnnotation.getInstance())
+      .required(PrimitiveTypeName.BINARY).as(stringType()).named("key")
+      .required(PrimitiveTypeName.INT32).named("value")
+      .named("key_value")
+      .named("testMap")
+      .named("Message");
+
+    List<SchemaElement> parquetSchema = parquetMetadataConverter.toParquetSchema(expected);
+    assertEquals(5, parquetSchema.size());
+    assertEquals(new SchemaElement("Message").setNum_children(1), parquetSchema.get(0));
+    assertEquals(new SchemaElement("testMap").setRepetition_type(FieldRepetitionType.REQUIRED).setNum_children(1).setConverted_type(ConvertedType.MAP).setLogicalType(LogicalType.MAP(new MapType())), parquetSchema.get(1));
+    // PARQUET-1879 ensure that LogicalType is not written (null) but ConvertedType is MAP_KEY_VALUE for backwards-compatibility
+    assertEquals(new SchemaElement("key_value").setRepetition_type(FieldRepetitionType.REPEATED).setNum_children(2).setConverted_type(ConvertedType.MAP_KEY_VALUE).setLogicalType(null), parquetSchema.get(2));
+    assertEquals(new SchemaElement("key").setType(Type.BYTE_ARRAY).setRepetition_type(FieldRepetitionType.REQUIRED).setConverted_type(ConvertedType.UTF8).setLogicalType(LogicalType.STRING(new StringType())), parquetSchema.get(3));
+    assertEquals(new SchemaElement("value").setType(Type.INT32).setRepetition_type(FieldRepetitionType.REQUIRED).setConverted_type(null).setLogicalType(null), parquetSchema.get(4));
+
+    MessageType schema = parquetMetadataConverter.fromParquetSchema(parquetSchema, null);
+    assertEquals(expected, schema);
+  }
+
+  @Test
+  public void testMapLogicalTypeReadWrite() throws Exception {
+    MessageType messageType = Types.buildMessage()
+      .requiredGroup().as(mapType())
+      .repeatedGroup().as(LogicalTypeAnnotation.MapKeyValueTypeAnnotation.getInstance())
+      .required(PrimitiveTypeName.BINARY).as(stringType()).named("key")
+      .required(PrimitiveTypeName.INT64).named("value")
+      .named("key_value")
+      .named("testMap")
+      .named("example");
+
+    verifyMapMessageType(messageType, "key_value");
+  }
+
+  @Test
+  public void testMapConvertedTypeReadWrite() throws Exception {
+    List<SchemaElement> oldConvertedTypeSchemaElements = new ArrayList<>();
+    oldConvertedTypeSchemaElements.add(new SchemaElement("example").setNum_children(1));
+    oldConvertedTypeSchemaElements.add(new SchemaElement("testMap").setRepetition_type(FieldRepetitionType.REQUIRED).setNum_children(1).setConverted_type(ConvertedType.MAP).setLogicalType(null));
+    oldConvertedTypeSchemaElements.add(new SchemaElement("map").setRepetition_type(FieldRepetitionType.REPEATED).setNum_children(2).setConverted_type(ConvertedType.MAP_KEY_VALUE).setLogicalType(null));
+    oldConvertedTypeSchemaElements.add(new SchemaElement("key").setType(Type.BYTE_ARRAY).setRepetition_type(FieldRepetitionType.REQUIRED).setConverted_type(ConvertedType.UTF8).setLogicalType(null));
+    oldConvertedTypeSchemaElements.add(new SchemaElement("value").setType(Type.INT64).setRepetition_type(FieldRepetitionType.REQUIRED).setConverted_type(null).setLogicalType(null));
+
+    ParquetMetadataConverter parquetMetadataConverter = new ParquetMetadataConverter();
+    MessageType messageType = parquetMetadataConverter.fromParquetSchema(oldConvertedTypeSchemaElements, null);
+
+    verifyMapMessageType(messageType, "map");
+  }
+
+  private void verifyMapMessageType(final MessageType messageType, final String keyValueName) throws IOException {
+    Path file = new Path(temporaryFolder.newFolder("verifyMapMessageType").getPath(), keyValueName + ".parquet");
+
+    try (ParquetWriter<Group> writer =
+           ExampleParquetWriter
+             .builder(file)
+             .withType(messageType)
+             .build()) {
+      final Group group = new SimpleGroup(messageType);
+      final Group mapGroup = group.addGroup("testMap");
+
+      for (int index = 0; index < 5; index++) {
+        final Group keyValueGroup = mapGroup.addGroup(keyValueName);
+        keyValueGroup.add("key", Binary.fromString("key" + index));
+        keyValueGroup.add("value", 100L + index);
+      }
+
+      writer.write(group);
+    }
+
+    try (ParquetReader<Group> reader = ParquetReader.builder(new GroupReadSupport(), file).build()) {
+      Group group = reader.read();
+
+      assertNotNull(group);
+
+      Group testMap = group.getGroup("testMap", 0);
+      assertNotNull(testMap);
+      assertEquals(5, testMap.getFieldRepetitionCount(keyValueName));
+
+      for (int index = 0; index < 5; index++) {
+        assertEquals("key" + index, testMap.getGroup(keyValueName, index).getString("key", 0));
+        assertEquals(100L + index, testMap.getGroup(keyValueName, index).getLong("value", 0));
+      }
+    }
   }
 }

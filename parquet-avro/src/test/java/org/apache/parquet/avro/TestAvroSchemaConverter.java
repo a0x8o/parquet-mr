@@ -37,6 +37,9 @@ import java.util.Collections;
 
 import static org.apache.avro.Schema.Type.INT;
 import static org.apache.avro.Schema.Type.LONG;
+import static org.apache.avro.Schema.Type.STRING;
+import static org.apache.avro.SchemaCompatibility.checkReaderWriterCompatibility;
+import static org.apache.avro.SchemaCompatibility.SchemaCompatibilityType.COMPATIBLE;
 import static org.apache.parquet.avro.AvroTestUtil.field;
 import static org.apache.parquet.avro.AvroTestUtil.optionalField;
 import static org.apache.parquet.avro.AvroTestUtil.primitive;
@@ -199,13 +202,13 @@ public class TestAvroSchemaConverter {
             "    }\n" +
             "  }\n" +
             "  required group mymap (MAP) {\n" +
-            "    repeated group map (MAP_KEY_VALUE) {\n" +
+            "    repeated group key_value (MAP_KEY_VALUE) {\n" +
             "      required binary key (UTF8);\n" +
             "      required int32 value;\n" +
             "    }\n" +
             "  }\n" +
             "  required group myemptymap (MAP) {\n" +
-            "    repeated group map (MAP_KEY_VALUE) {\n" +
+            "    repeated group key_value (MAP_KEY_VALUE) {\n" +
             "      required binary key (UTF8);\n" +
             "      required int32 value;\n" +
             "    }\n" +
@@ -246,13 +249,13 @@ public class TestAvroSchemaConverter {
             "    repeated int32 array;\n" +
             "  }\n" +
             "  required group mymap (MAP) {\n" +
-            "    repeated group map (MAP_KEY_VALUE) {\n" +
+            "    repeated group key_value (MAP_KEY_VALUE) {\n" +
             "      required binary key (UTF8);\n" +
             "      required int32 value;\n" +
             "    }\n" +
             "  }\n" +
             "  required group myemptymap (MAP) {\n" +
-            "    repeated group map (MAP_KEY_VALUE) {\n" +
+            "    repeated group key_value (MAP_KEY_VALUE) {\n" +
             "      required binary key (UTF8);\n" +
             "      required int32 value;\n" +
             "    }\n" +
@@ -317,7 +320,7 @@ public class TestAvroSchemaConverter {
         schema,
         "message record1 {\n" +
             "  required group myintmap (MAP) {\n" +
-            "    repeated group map (MAP_KEY_VALUE) {\n" +
+            "    repeated group key_value (MAP_KEY_VALUE) {\n" +
             "      required binary key (UTF8);\n" +
             "      optional int32 value;\n" +
             "    }\n" +
@@ -764,6 +767,35 @@ public class TestAvroSchemaConverter {
 
     testParquetToAvroConversion(schema, parquetSchema);
     testParquetToAvroConversion(NEW_BEHAVIOR, schema, parquetSchema);
+  }
+
+  @Test
+  public void testUUIDType() throws Exception {
+    Schema fromAvro = Schema.createRecord("myrecord", null, null, false,
+        Arrays.asList(new Schema.Field("uuid", LogicalTypes.uuid().addToSchema(Schema.create(STRING)), null, null)));
+    String parquet = "message myrecord {\n" +
+        "  required binary uuid (STRING);\n" +
+        "}\n";
+    Schema toAvro = Schema.createRecord("myrecord", null, null, false,
+        Arrays.asList(new Schema.Field("uuid", Schema.create(STRING), null, null)));
+
+    testAvroToParquetConversion(fromAvro, parquet);
+    testParquetToAvroConversion(toAvro, parquet);
+
+    assertEquals(COMPATIBLE, checkReaderWriterCompatibility(fromAvro, toAvro).getType());
+  }
+
+  @Test
+  public void testUUIDTypeWithParquetUUID() throws Exception {
+    Schema uuid = LogicalTypes.uuid().addToSchema(Schema.create(STRING));
+    Schema expected = Schema.createRecord("myrecord", null, null, false,
+        Arrays.asList(new Schema.Field("uuid", uuid, null, null)));
+
+    testRoundTripConversion(AvroTestUtil.conf(AvroWriteSupport.WRITE_PARQUET_UUID, true),
+        expected,
+        "message myrecord {\n" +
+            "  required fixed_len_byte_array(16) uuid (UUID);\n" +
+            "}\n");
   }
 
   public static Schema optional(Schema original) {

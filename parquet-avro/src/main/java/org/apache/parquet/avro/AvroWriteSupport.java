@@ -1,4 +1,4 @@
-/* 
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *   http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -19,10 +19,13 @@
 package org.apache.parquet.avro;
 
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+
 import org.apache.avro.Conversion;
 import org.apache.avro.LogicalType;
 import org.apache.avro.Schema;
@@ -35,6 +38,7 @@ import org.apache.parquet.hadoop.api.WriteSupport;
 import org.apache.parquet.io.api.Binary;
 import org.apache.parquet.io.api.RecordConsumer;
 import org.apache.parquet.schema.GroupType;
+import org.apache.parquet.schema.LogicalTypeAnnotation.UUIDLogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.Type;
 import org.apache.hadoop.util.ReflectionUtils;
@@ -60,6 +64,8 @@ public class AvroWriteSupport<T> extends WriteSupport<T> {
   public static final String WRITE_OLD_LIST_STRUCTURE =
       "parquet.avro.write-old-list-structure";
   static final boolean WRITE_OLD_LIST_STRUCTURE_DEFAULT = true;
+  public static final String WRITE_PARQUET_UUID = "parquet.avro.write-parquet-uuid";
+  static final boolean WRITE_PARQUET_UUID_DEFAULT = false;
 
   private static final String MAP_REPEATED_NAME = "key_value";
   private static final String MAP_KEY_NAME = "key";
@@ -228,7 +234,7 @@ public class AvroWriteSupport<T> extends WriteSupport<T> {
     recordConsumer.endGroup();
   }
 
-  private void writeUnion(GroupType parquetSchema, Schema avroSchema, 
+  private void writeUnion(GroupType parquetSchema, Schema avroSchema,
                           Object value) {
     recordConsumer.startGroup();
 
@@ -343,7 +349,11 @@ public class AvroWriteSupport<T> extends WriteSupport<T> {
         }
         break;
       case STRING:
-        recordConsumer.addBinary(fromAvroString(value));
+        if (type.asPrimitiveType().getLogicalTypeAnnotation() instanceof UUIDLogicalTypeAnnotation) {
+          recordConsumer.addBinary(fromUUIDString(value));
+        } else {
+          recordConsumer.addBinary(fromAvroString(value));
+        }
         break;
       case RECORD:
         writeRecord(type.asGroupType(), avroSchema, value);
@@ -360,6 +370,20 @@ public class AvroWriteSupport<T> extends WriteSupport<T> {
       case UNION:
         writeUnion(type.asGroupType(), avroSchema, value);
         break;
+    }
+  }
+
+  private Binary fromUUIDString(Object value) {
+    byte[] data = new byte[UUIDLogicalTypeAnnotation.BYTES];
+    UUID uuid = UUID.fromString(value.toString());
+    writeLong(data, 0, uuid.getMostSignificantBits());
+    writeLong(data, Long.BYTES, uuid.getLeastSignificantBits());
+    return Binary.fromConstantByteArray(data);
+  }
+
+  private void writeLong(byte[] array, int offset, long value) {
+    for (int i = 0; i < Long.BYTES; ++i) {
+      array[i + offset] = (byte) (value >>> ((Long.BYTES - i - 1) * Byte.SIZE));
     }
   }
 
@@ -542,7 +566,7 @@ public class AvroWriteSupport<T> extends WriteSupport<T> {
     @Override
     public void writeCollection(GroupType schema, Schema avroSchema,
                                 Collection<?> array) {
-      if (array.size() > 0) {
+      if (!array.isEmpty()) {
         recordConsumer.startField(OLD_LIST_REPEATED_NAME, 0);
         try {
           for (Object elt : array) {
@@ -550,18 +574,16 @@ public class AvroWriteSupport<T> extends WriteSupport<T> {
           }
         } catch (NullPointerException e) {
           // find the null element and throw a better error message
-          int i = 0;
-          for (Object elt : array) {
-            if (elt == null) {
-              throw new NullPointerException(
-                  "Array contains a null element at " + i + "\n" +
-                  "Set parquet.avro.write-old-list-structure=false to turn " +
-                  "on support for arrays with null elements.");
-            }
-            i += 1;
+          final int idx =
+              Arrays.asList(array.toArray(new Object[0])).indexOf(null);
+          if (idx < 0) {
+            // no element was null, throw the original exception
+            throw e;
           }
-          // no element was null, throw the original exception
-          throw e;
+          throw new NullPointerException(
+              "Array contains a null element at " + idx + ". "
+                  + "Set parquet.avro.write-old-list-structure=false to turn "
+                  + "on support for arrays with null elements.");
         }
         recordConsumer.endField(OLD_LIST_REPEATED_NAME, 0);
       }
@@ -578,16 +600,15 @@ public class AvroWriteSupport<T> extends WriteSupport<T> {
           }
         } catch (NullPointerException e) {
           // find the null element and throw a better error message
-          for (int i = 0; i < array.length; i += 1) {
-            if (array[i] == null) {
-              throw new NullPointerException(
-                  "Array contains a null element at " + i + "\n" +
-                  "Set parquet.avro.write-old-list-structure=false to turn " +
-                  "on support for arrays with null elements.");
-            }
+          final int idx = Arrays.asList(array).indexOf(null);
+          if (idx < 0) {
+            // no element was null, throw the original exception
+            throw e;
           }
-          // no element was null, throw the original exception
-          throw e;
+          throw new NullPointerException(
+              "Array contains a null element at " + idx + ". " +
+              "Set parquet.avro.write-old-list-structure=false to turn " +
+              "on support for arrays with null elements.");
         }
         recordConsumer.endField(OLD_LIST_REPEATED_NAME, 0);
       }

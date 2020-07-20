@@ -95,6 +95,7 @@ import org.apache.parquet.format.SchemaElement;
 import org.apache.parquet.format.Statistics;
 import org.apache.parquet.format.Type;
 import org.apache.parquet.format.TypeDefinedOrder;
+import org.apache.parquet.format.UUIDType;
 import org.apache.parquet.hadoop.metadata.BlockMetaData;
 import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
@@ -107,6 +108,8 @@ import org.apache.parquet.internal.hadoop.metadata.IndexReference;
 import org.apache.parquet.io.ParquetDecodingException;
 import org.apache.parquet.io.api.Binary;
 import org.apache.parquet.schema.ColumnOrder.ColumnOrderName;
+import org.apache.parquet.schema.LogicalTypeAnnotation.LogicalTypeAnnotationVisitor;
+import org.apache.parquet.schema.LogicalTypeAnnotation.UUIDLogicalTypeAnnotation;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.OriginalType;
@@ -279,7 +282,7 @@ public class ParquetMetadataConverter {
   }
 
   LogicalType convertToLogicalType(LogicalTypeAnnotation logicalTypeAnnotation) {
-    return logicalTypeAnnotation.accept(LOGICAL_TYPE_ANNOTATION_VISITOR).get();
+    return logicalTypeAnnotation.accept(LOGICAL_TYPE_ANNOTATION_VISITOR).orElse(null);
   }
 
   ConvertedType convertToConvertedType(LogicalTypeAnnotation logicalTypeAnnotation) {
@@ -453,12 +456,12 @@ public class ParquetMetadataConverter {
     }
 
     @Override
-    public Optional<LogicalType> visit(LogicalTypeAnnotation.IntervalLogicalTypeAnnotation intervalLogicalType) {
-      return of(LogicalType.UNKNOWN(new NullType()));
+    public Optional<LogicalType> visit(UUIDLogicalTypeAnnotation uuidLogicalType) {
+      return of(LogicalType.UUID(new UUIDType()));
     }
 
     @Override
-    public Optional<LogicalType> visit(LogicalTypeAnnotation.MapKeyValueTypeAnnotation mapKeyValueLogicalType) {
+    public Optional<LogicalType> visit(LogicalTypeAnnotation.IntervalLogicalTypeAnnotation intervalLogicalType) {
       return of(LogicalType.UNKNOWN(new NullType()));
     }
   }
@@ -479,7 +482,9 @@ public class ParquetMetadataConverter {
           columnMetaData.getTotalUncompressedSize(),
           columnMetaData.getTotalSize(),
           columnMetaData.getFirstDataPageOffset());
-      columnChunk.meta_data.dictionary_page_offset = columnMetaData.getDictionaryPageOffset();
+      if (columnMetaData.getEncodingStats() != null && columnMetaData.getEncodingStats().hasDictionaryPages()) {
+        columnChunk.meta_data.setDictionary_page_offset(columnMetaData.getDictionaryPageOffset());
+      }
       columnChunk.meta_data.setBloom_filter_offset(columnMetaData.getBloomFilterOffset());
       if (!columnMetaData.getStatistics().isEmpty()) {
         columnChunk.meta_data.setStatistics(toParquetStatistics(columnMetaData.getStatistics(), this.statisticsTruncateLength));
@@ -836,6 +841,11 @@ public class ParquetMetadataConverter {
         }
 
         @Override
+        public Optional<SortOrder> visit(UUIDLogicalTypeAnnotation uuidLogicalType) {
+          return of(SortOrder.UNSIGNED);
+        }
+
+        @Override
         public Optional<SortOrder> visit(LogicalTypeAnnotation.JsonLogicalTypeAnnotation jsonLogicalType) {
           return of(SortOrder.UNSIGNED);
         }
@@ -1011,6 +1021,8 @@ public class ParquetMetadataConverter {
       case TIMESTAMP:
         TimestampType timestamp = type.getTIMESTAMP();
         return LogicalTypeAnnotation.timestampType(timestamp.isAdjustedToUTC, convertTimeUnit(timestamp.unit));
+      case UUID:
+        return LogicalTypeAnnotation.uuidType();
       default:
         throw new RuntimeException("Unknown logical type " + type);
     }

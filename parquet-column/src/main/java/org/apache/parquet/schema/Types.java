@@ -31,6 +31,8 @@ import org.apache.parquet.schema.Type.ID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.apache.parquet.schema.LogicalTypeAnnotation.mapType;
+
 /**
  * This class provides fluent builders that produce Parquet schema Types.
  * <p>
@@ -445,20 +447,22 @@ public class Types {
         logicalTypeAnnotation.accept(new LogicalTypeAnnotation.LogicalTypeAnnotationVisitor<Boolean>() {
           @Override
           public Optional<Boolean> visit(LogicalTypeAnnotation.StringLogicalTypeAnnotation stringLogicalType) {
-            checkBinaryPrimitiveType(stringLogicalType);
-            return Optional.of(true);
+            return checkBinaryPrimitiveType(stringLogicalType);
           }
 
           @Override
           public Optional<Boolean> visit(LogicalTypeAnnotation.JsonLogicalTypeAnnotation jsonLogicalType) {
-            checkBinaryPrimitiveType(jsonLogicalType);
-            return Optional.of(true);
+            return checkBinaryPrimitiveType(jsonLogicalType);
           }
 
           @Override
           public Optional<Boolean> visit(LogicalTypeAnnotation.BsonLogicalTypeAnnotation bsonLogicalType) {
-            checkBinaryPrimitiveType(bsonLogicalType);
-            return Optional.of(true);
+            return checkBinaryPrimitiveType(bsonLogicalType);
+          }
+
+          @Override
+          public Optional<Boolean> visit(LogicalTypeAnnotation.UUIDLogicalTypeAnnotation uuidLogicalType) {
+            return checkFixedPrimitiveType(LogicalTypeAnnotation.UUIDLogicalTypeAnnotation.BYTES, uuidLogicalType);
           }
 
           @Override
@@ -495,8 +499,7 @@ public class Types {
 
           @Override
           public Optional<Boolean> visit(LogicalTypeAnnotation.DateLogicalTypeAnnotation dateLogicalType) {
-            checkInt32PrimitiveType(dateLogicalType);
-            return Optional.of(true);
+            return checkInt32PrimitiveType(dateLogicalType);
           }
 
           @Override
@@ -536,41 +539,43 @@ public class Types {
 
           @Override
           public Optional<Boolean> visit(LogicalTypeAnnotation.TimestampLogicalTypeAnnotation timestampLogicalType) {
-            checkInt64PrimitiveType(timestampLogicalType);
-            return Optional.of(true);
+            return checkInt64PrimitiveType(timestampLogicalType);
           }
 
           @Override
           public Optional<Boolean> visit(LogicalTypeAnnotation.IntervalLogicalTypeAnnotation intervalLogicalType) {
-            Preconditions.checkState(
-                (primitiveType == PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY) &&
-                (length == 12),
-                "INTERVAL can only annotate FIXED_LEN_BYTE_ARRAY(12)");
-            return Optional.of(true);
+            return checkFixedPrimitiveType(12, intervalLogicalType);
           }
 
           @Override
           public Optional<Boolean> visit(LogicalTypeAnnotation.EnumLogicalTypeAnnotation enumLogicalType) {
+            return checkBinaryPrimitiveType(enumLogicalType);
+          }
+
+          private Optional<Boolean> checkFixedPrimitiveType(int l, LogicalTypeAnnotation logicalTypeAnnotation) {
             Preconditions.checkState(
-                primitiveType == PrimitiveTypeName.BINARY,
-                "ENUM can only annotate binary fields");
+                primitiveType == PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY && length == l,
+              logicalTypeAnnotation.toString() + " can only annotate FIXED_LEN_BYTE_ARRAY(" + l + ')');
             return Optional.of(true);
           }
 
-          private void checkBinaryPrimitiveType(LogicalTypeAnnotation logicalTypeAnnotation) {
+          private Optional<Boolean> checkBinaryPrimitiveType(LogicalTypeAnnotation logicalTypeAnnotation) {
             Preconditions.checkState(
                 primitiveType == PrimitiveTypeName.BINARY,
-              logicalTypeAnnotation.toString() + " can only annotate binary fields");
+              logicalTypeAnnotation.toString() + " can only annotate BINARY");
+            return Optional.of(true);
           }
 
-          private void checkInt32PrimitiveType(LogicalTypeAnnotation logicalTypeAnnotation) {
+          private Optional<Boolean> checkInt32PrimitiveType(LogicalTypeAnnotation logicalTypeAnnotation) {
             Preconditions.checkState(primitiveType == PrimitiveTypeName.INT32,
               logicalTypeAnnotation.toString() + " can only annotate INT32");
+            return Optional.of(true);
           }
 
-          private void checkInt64PrimitiveType(LogicalTypeAnnotation logicalTypeAnnotation) {
+          private Optional<Boolean> checkInt64PrimitiveType(LogicalTypeAnnotation logicalTypeAnnotation) {
             Preconditions.checkState(primitiveType == PrimitiveTypeName.INT64,
               logicalTypeAnnotation.toString() + " can only annotate INT64");
+            return Optional.of(true);
           }
         }).orElseThrow(() -> new IllegalStateException(logicalTypeAnnotation + " can not be applied to a primitive type"));
       }
@@ -1176,18 +1181,18 @@ public class Types {
         keyType = STRING_KEY;
       }
 
-      GroupBuilder<GroupType> builder = buildGroup(repetition).as(OriginalType.MAP);
+      GroupBuilder<GroupType> builder = buildGroup(repetition).as(mapType());
       if (id != null) {
         builder.id(id.intValue());
       }
 
       if (valueType != null) {
         return builder
-            .repeatedGroup().addFields(keyType, valueType).named("map")
+            .repeatedGroup().addFields(keyType, valueType).named(ConversionPatterns.MAP_REPEATED_NAME)
             .named(name);
       } else {
         return builder
-            .repeatedGroup().addFields(keyType).named("map")
+            .repeatedGroup().addFields(keyType).named(ConversionPatterns.MAP_REPEATED_NAME)
             .named(name);
       }
     }
