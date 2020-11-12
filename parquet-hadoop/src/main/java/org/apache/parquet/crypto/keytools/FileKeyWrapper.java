@@ -21,6 +21,7 @@ package org.apache.parquet.crypto.keytools;
 
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.util.Arrays;
 import java.util.concurrent.ConcurrentMap;
 
 import org.apache.hadoop.conf.Configuration;
@@ -35,7 +36,7 @@ import static org.apache.parquet.crypto.keytools.KeyToolkit.KEK_WRITE_CACHE_PER_
 public class FileKeyWrapper {
   private static final Logger LOG = LoggerFactory.getLogger(FileKeyWrapper.class);
 
-  public static final int KEK_LENGTH = 16;
+  private static final int[] ACCEPTABLE_KEK_LENGTHS = {128, 192, 256};
   public static final int KEK_ID_LENGTH = 16;
 
   // A map of MEK_ID -> KeyEncryptionKey, for the current token
@@ -49,38 +50,52 @@ public class FileKeyWrapper {
   private final Configuration hadoopConfiguration;
   private final SecureRandom random;
   private final boolean doubleWrapping;
+  private final int kekLength;
 
   private short keyCounter;
   private String accessToken;
 
-  FileKeyWrapper(Configuration configuration, FileKeyMaterialStore keyMaterialStore) {
+  FileKeyWrapper(Configuration configuration, FileKeyMaterialStore keyMaterialStore,
+                 KeyToolkit.KmsClientAndDetails kmsClientAndDetails) {
     this.hadoopConfiguration = configuration;
     this.keyMaterialStore = keyMaterialStore;
-    
+
     random = new SecureRandom();
     keyCounter = 0;
 
-    cacheEntryLifetime = 1000L * hadoopConfiguration.getLong(KeyToolkit.CACHE_LIFETIME_PROPERTY_NAME, 
-        KeyToolkit.CACHE_LIFETIME_DEFAULT_SECONDS); 
-
-    kmsInstanceID = hadoopConfiguration.getTrimmed(KeyToolkit.KMS_INSTANCE_ID_PROPERTY_NAME, 
-        KmsClient.KMS_INSTANCE_ID_DEFAULT);
+    cacheEntryLifetime = 1000L * hadoopConfiguration.getLong(KeyToolkit.CACHE_LIFETIME_PROPERTY_NAME,
+      KeyToolkit.CACHE_LIFETIME_DEFAULT_SECONDS);
 
     doubleWrapping =  hadoopConfiguration.getBoolean(KeyToolkit.DOUBLE_WRAPPING_PROPERTY_NAME, KeyToolkit.DOUBLE_WRAPPING_DEFAULT);
     accessToken = hadoopConfiguration.getTrimmed(KeyToolkit.KEY_ACCESS_TOKEN_PROPERTY_NAME, KmsClient.KEY_ACCESS_TOKEN_DEFAULT);
 
-    kmsInstanceURL = hadoopConfiguration.getTrimmed(KeyToolkit.KMS_INSTANCE_URL_PROPERTY_NAME, 
-        KmsClient.KMS_INSTANCE_URL_DEFAULT);
-
     // Check caches upon each file writing (clean once in cacheEntryLifetime)
     KMS_CLIENT_CACHE_PER_TOKEN.checkCacheForExpiredTokens(cacheEntryLifetime);
-    kmsClient = KeyToolkit.getKmsClient(kmsInstanceID, kmsInstanceURL, configuration, accessToken, cacheEntryLifetime);
+    
+    if (null == kmsClientAndDetails) {
+      kmsInstanceID = hadoopConfiguration.getTrimmed(KeyToolkit.KMS_INSTANCE_ID_PROPERTY_NAME,
+        KmsClient.KMS_INSTANCE_ID_DEFAULT);
+      kmsInstanceURL = hadoopConfiguration.getTrimmed(KeyToolkit.KMS_INSTANCE_URL_PROPERTY_NAME,
+        KmsClient.KMS_INSTANCE_URL_DEFAULT);
+      kmsClient = KeyToolkit.getKmsClient(kmsInstanceID, kmsInstanceURL, configuration, accessToken, cacheEntryLifetime);
+    } else {
+      kmsInstanceID = kmsClientAndDetails.getKmsInstanceID();
+      kmsInstanceURL = kmsClientAndDetails.getKmsInstanceURL();
+      kmsClient = kmsClientAndDetails.getKmsClient();
+    }
 
     if (doubleWrapping) {
       KEK_WRITE_CACHE_PER_TOKEN.checkCacheForExpiredTokens(cacheEntryLifetime);
       KEKPerMasterKeyID = KEK_WRITE_CACHE_PER_TOKEN.getOrCreateInternalCache(accessToken, cacheEntryLifetime);
+      int kekLengthBits = configuration.getInt(KeyToolkit.KEK_LENGTH_PROPERTY_NAME,
+          KeyToolkit.KEK_LENGTH_DEFAULT);
+      if (Arrays.binarySearch(ACCEPTABLE_KEK_LENGTHS, kekLengthBits) < 0) {
+        throw new ParquetCryptoRuntimeException("Wrong key encryption key (KEK) length : " + kekLengthBits);
+      }
+      kekLength = kekLengthBits / 8;
     } else {
       KEKPerMasterKeyID = null;
+      kekLength = 0;
     }
 
     if (LOG.isDebugEnabled()) {
@@ -88,6 +103,10 @@ public class FileKeyWrapper {
           + "keyMaterialStore: {}; token snippet: {}", kmsClient, kmsInstanceID, kmsInstanceURL, doubleWrapping, 
           keyMaterialStore, KeyToolkit.formatTokenForLog(accessToken));
     }
+  }
+
+  FileKeyWrapper(Configuration configuration, FileKeyMaterialStore keyMaterialStore) {
+    this(configuration, keyMaterialStore, null/*kmsClientAndDetails*/);
   }
 
   byte[] getEncryptionKeyMetadata(byte[] dataKey, String masterKeyID, boolean isFooterKey) {
@@ -143,7 +162,7 @@ public class FileKeyWrapper {
   }
 
   private KeyEncryptionKey createKeyEncryptionKey(String masterKeyID) {
-    byte[] kekBytes = new byte[KEK_LENGTH]; 
+    byte[] kekBytes = new byte[kekLength]; 
     random.nextBytes(kekBytes);
 
     byte[] kekID = new byte[KEK_ID_LENGTH];
