@@ -47,7 +47,7 @@ abstract public class ColumnIO {
     this.name = type.getName();
   }
 
-  public String[] getFieldPath() {
+  String[] getFieldPath() {
     return fieldPath;
   }
 

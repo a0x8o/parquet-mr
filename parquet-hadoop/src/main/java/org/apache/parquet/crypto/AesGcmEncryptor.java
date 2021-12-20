@@ -29,11 +29,8 @@ import java.security.GeneralSecurityException;
 
 public class AesGcmEncryptor extends AesCipher implements BlockCipher.Encryptor{
 
-  private long operationCounter;
-
   AesGcmEncryptor(byte[] keyBytes) {
     super(AesMode.GCM, keyBytes);
-    operationCounter = 0;
 
     try {
       cipher = Cipher.getInstance(AesMode.GCM.getCipherName());
@@ -52,11 +49,7 @@ public class AesGcmEncryptor extends AesCipher implements BlockCipher.Encryptor{
     return encrypt(writeLength, plainText, localNonce, AAD);
   }
 
-  public byte[] encrypt(boolean writeLength, byte[] plainText, byte[] nonce, byte[] AAD) {
-    if (operationCounter > GCM_RANDOM_IV_SAME_KEY_MAX_OPS) {
-      throw new ParquetCryptoRuntimeException("Exceeded limit of AES GCM encryption operations with same key and random IV");
-    }
-    operationCounter++;
+  public byte[] encrypt(boolean writeLength, byte[] plainText, byte[] nonce, byte[] AAD) { 
 
     if (nonce.length != NONCE_LENGTH) {
       throw new ParquetCryptoRuntimeException("Wrong nonce length " + nonce.length);

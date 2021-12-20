@@ -45,7 +45,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.parquet.CorruptStatistics;
 import org.apache.parquet.ParquetReadOptions;
-import org.apache.parquet.Preconditions;
 import org.apache.parquet.bytes.ByteBufferInputStream;
 import org.apache.parquet.column.ParquetProperties;
 import org.apache.parquet.column.statistics.BinaryStatistics;
@@ -120,10 +119,10 @@ import org.apache.parquet.internal.column.columnindex.BinaryTruncator;
 import org.apache.parquet.internal.column.columnindex.ColumnIndexBuilder;
 import org.apache.parquet.internal.column.columnindex.OffsetIndexBuilder;
 import org.apache.parquet.internal.hadoop.metadata.IndexReference;
-import org.apache.parquet.io.InvalidFileOffsetException;
 import org.apache.parquet.io.ParquetDecodingException;
 import org.apache.parquet.io.api.Binary;
 import org.apache.parquet.schema.ColumnOrder.ColumnOrderName;
+import org.apache.parquet.schema.LogicalTypeAnnotation.LogicalTypeAnnotationVisitor;
 import org.apache.parquet.schema.LogicalTypeAnnotation.UUIDLogicalTypeAnnotation;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.MessageType;
@@ -202,22 +201,8 @@ public class ParquetMetadataConverter {
     List<BlockMetaData> blocks = parquetMetadata.getBlocks();
     List<RowGroup> rowGroups = new ArrayList<RowGroup>();
     long numRows = 0;
-    long preBlockStartPos = 0;
-    long preBlockCompressedSize = 0;
     for (BlockMetaData block : blocks) {
       numRows += block.getRowCount();
-      long blockStartPos = block.getStartingPos();
-      // first block
-      if (blockStartPos == 4) {
-        preBlockStartPos = 0;
-        preBlockCompressedSize = 0;
-      }
-      if (preBlockStartPos != 0) {
-        Preconditions.checkState(blockStartPos >= preBlockStartPos + preBlockCompressedSize,
-          "Invalid block starting position:" + blockStartPos);
-      }
-      preBlockStartPos = blockStartPos;
-      preBlockCompressedSize = block.getCompressedSize();
       addRowGroup(parquetMetadata, rowGroups, block, fileEncryptor);
     }
     FileMetaData fileMetaData = new FileMetaData(
@@ -1241,36 +1226,14 @@ public class ParquetMetadataConverter {
   static FileMetaData filterFileMetaDataByMidpoint(FileMetaData metaData, RangeMetadataFilter filter) {
     List<RowGroup> rowGroups = metaData.getRow_groups();
     List<RowGroup> newRowGroups = new ArrayList<RowGroup>();
-    long preStartIndex = 0;
-    long preCompressedSize = 0;
-    boolean firstColumnWithMetadata = true;
-    if (rowGroups != null && rowGroups.size() > 0) {
-      firstColumnWithMetadata = rowGroups.get(0).getColumns().get(0).isSetMeta_data();
-    }
     for (RowGroup rowGroup : rowGroups) {
       long totalSize = 0;
       long startIndex;
-      ColumnChunk columnChunk = rowGroup.getColumns().get(0);
-      if (firstColumnWithMetadata) {
-        startIndex = getOffset(columnChunk);
-      } else {
-        assert rowGroup.isSetFile_offset();
-        assert rowGroup.isSetTotal_compressed_size();
 
-        //the file_offset of first block always holds the truth, while other blocks don't :
-        //see PARQUET-2078 for details
+      if (rowGroup.isSetFile_offset()) {
         startIndex = rowGroup.getFile_offset();
-        if (invalidFileOffset(startIndex, preStartIndex, preCompressedSize)) {
-          //first row group's offset is always 4
-          if (preStartIndex == 0) {
-            startIndex = 4;
-          } else {
-            // use minStartIndex(imprecise in case of padding, but good enough for filtering)
-            startIndex = preStartIndex + preCompressedSize;
-          }
-        }
-        preStartIndex = startIndex;
-        preCompressedSize = rowGroup.getTotal_compressed_size();
+      } else {
+        startIndex = getOffset(rowGroup.getColumns().get(0));
       }
 
       if (rowGroup.isSetTotal_compressed_size()) {
@@ -1291,59 +1254,16 @@ public class ParquetMetadataConverter {
     return metaData;
   }
 
-  private static boolean invalidFileOffset(long startIndex, long preStartIndex, long preCompressedSize) {
-    boolean invalid = false;
-    assert preStartIndex <= startIndex;
-    // checking the first rowGroup
-    if (preStartIndex == 0 && startIndex != 4) {
-      invalid = true;
-      return invalid;
-    }
-
-    //calculate start index for other blocks
-    long minStartIndex = preStartIndex + preCompressedSize;
-    if (startIndex < minStartIndex) {
-      // a bad offset detected, try first column's offset
-      // can not use minStartIndex in case of padding
-      invalid = true;
-    }
-
-    return invalid;
-  }
-
   // Visible for testing
   static FileMetaData filterFileMetaDataByStart(FileMetaData metaData, OffsetMetadataFilter filter) {
     List<RowGroup> rowGroups = metaData.getRow_groups();
     List<RowGroup> newRowGroups = new ArrayList<RowGroup>();
-    long preStartIndex = 0;
-    long preCompressedSize = 0;
-    boolean firstColumnWithMetadata = true;
-    if (rowGroups != null && rowGroups.size() > 0) {
-      firstColumnWithMetadata = rowGroups.get(0).getColumns().get(0).isSetMeta_data();
-    }
     for (RowGroup rowGroup : rowGroups) {
       long startIndex;
-      ColumnChunk columnChunk = rowGroup.getColumns().get(0);
-      if (firstColumnWithMetadata) {
-        startIndex = getOffset(columnChunk);
-      } else {
-        assert rowGroup.isSetFile_offset();
-        assert rowGroup.isSetTotal_compressed_size();
-
-        //the file_offset of first block always holds the truth, while other blocks don't :
-        //see PARQUET-2078 for details
+      if (rowGroup.isSetFile_offset()) {
         startIndex = rowGroup.getFile_offset();
-        if (invalidFileOffset(startIndex, preStartIndex, preCompressedSize)) {
-          //first row group's offset is always 4
-          if (preStartIndex == 0) {
-            startIndex = 4;
-          } else {
-            throw new InvalidFileOffsetException("corrupted RowGroup.file_offset found, " +
-              "please use file range instead of block offset for split.");
-          }
-        }
-        preStartIndex = startIndex;
-        preCompressedSize = rowGroup.getTotal_compressed_size();
+      } else {
+        startIndex = getOffset(rowGroup.getColumns().get(0));
       }
 
       if (filter.contains(startIndex)) {
@@ -1791,14 +1711,14 @@ public class ParquetMetadataConverter {
       org.apache.parquet.column.Encoding valuesEncoding,
       OutputStream to,
       BlockCipher.Encryptor blockEncryptor,
-      byte[] pageHeaderAAD) throws IOException {
+      byte[] AAD) throws IOException {
     writePageHeader(newDataPageHeader(uncompressedSize,
                                       compressedSize,
                                       valueCount,
                                       rlEncoding,
                                       dlEncoding,
                                       valuesEncoding),
-                    to, blockEncryptor, pageHeaderAAD);
+                    to, blockEncryptor, AAD);
   }
 
   public void writeDataPageV1Header(
@@ -1824,7 +1744,7 @@ public class ParquetMetadataConverter {
       int crc,
       OutputStream to,
       BlockCipher.Encryptor blockEncryptor,
-      byte[] pageHeaderAAD) throws IOException {
+      byte[] AAD) throws IOException {
     writePageHeader(newDataPageHeader(uncompressedSize,
                                       compressedSize,
                                       valueCount,
@@ -1832,7 +1752,7 @@ public class ParquetMetadataConverter {
                                       dlEncoding,
                                       valuesEncoding,
                                       crc),
-                    to, blockEncryptor, pageHeaderAAD);
+                    to, blockEncryptor, AAD);
   }
 
   public void writeDataPageV2Header(
@@ -1852,13 +1772,13 @@ public class ParquetMetadataConverter {
       org.apache.parquet.column.Encoding dataEncoding,
       int rlByteLength, int dlByteLength,
       OutputStream to, BlockCipher.Encryptor blockEncryptor,
-      byte[] pageHeaderAAD) throws IOException {
+      byte[] AAD) throws IOException {
     writePageHeader(
         newDataPageV2Header(
             uncompressedSize, compressedSize,
             valueCount, nullCount, rowCount,
             dataEncoding,
-            rlByteLength, dlByteLength), to, blockEncryptor, pageHeaderAAD);
+            rlByteLength, dlByteLength), to, blockEncryptor, AAD);
   }
 
   private PageHeader newDataPageV2Header(
@@ -1886,10 +1806,10 @@ public class ParquetMetadataConverter {
   public void writeDictionaryPageHeader(
       int uncompressedSize, int compressedSize, int valueCount,
       org.apache.parquet.column.Encoding valuesEncoding, OutputStream to,
-      BlockCipher.Encryptor blockEncryptor, byte[] pageHeaderAAD) throws IOException {
+      BlockCipher.Encryptor blockEncryptor, byte[] AAD) throws IOException {
     PageHeader pageHeader = new PageHeader(PageType.DICTIONARY_PAGE, uncompressedSize, compressedSize);
     pageHeader.setDictionary_page_header(new DictionaryPageHeader(valueCount, getEncoding(valuesEncoding)));
-    writePageHeader(pageHeader, to, blockEncryptor, pageHeaderAAD);
+    writePageHeader(pageHeader, to, blockEncryptor, AAD);
   }
 
   public void writeDictionaryPageHeader(
@@ -1902,11 +1822,11 @@ public class ParquetMetadataConverter {
   public void writeDictionaryPageHeader(
       int uncompressedSize, int compressedSize, int valueCount,
       org.apache.parquet.column.Encoding valuesEncoding, int crc, OutputStream to,
-      BlockCipher.Encryptor blockEncryptor, byte[] pageHeaderAAD) throws IOException {
+      BlockCipher.Encryptor blockEncryptor, byte[] AAD) throws IOException {
     PageHeader pageHeader = new PageHeader(PageType.DICTIONARY_PAGE, uncompressedSize, compressedSize);
     pageHeader.setCrc(crc);
     pageHeader.setDictionary_page_header(new DictionaryPageHeader(valueCount, getEncoding(valuesEncoding)));
-    writePageHeader(pageHeader, to, blockEncryptor, pageHeaderAAD);
+    writePageHeader(pageHeader, to, blockEncryptor, AAD);
   }
 
   private static BoundaryOrder toParquetBoundaryOrder(
