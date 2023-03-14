@@ -150,7 +150,7 @@ public class CapacityByteArrayOutputStream extends OutputStream {
   public CapacityByteArrayOutputStream(int initialSlabSize, int maxCapacityHint, ByteBufferAllocator allocator) {
     checkArgument(initialSlabSize > 0, "initialSlabSize must be > 0");
     checkArgument(maxCapacityHint > 0, "maxCapacityHint must be > 0");
-    checkArgument(maxCapacityHint >= initialSlabSize, String.format("maxCapacityHint can't be less than initialSlabSize %d %d", initialSlabSize, maxCapacityHint));
+    checkArgument(maxCapacityHint >= initialSlabSize, "maxCapacityHint can't be less than initialSlabSize %s %s", initialSlabSize, maxCapacityHint);
     this.initialSlabSize = initialSlabSize;
     this.maxCapacityHint = maxCapacityHint;
     this.allocator = allocator;
@@ -163,6 +163,15 @@ public class CapacityByteArrayOutputStream extends OutputStream {
    */
   private void addSlab(int minimumSize) {
     int nextSlabSize;
+
+    // check for overflow 
+    try {
+      Math.addExact(bytesUsed, minimumSize);
+    } catch (ArithmeticException e) {
+      // This is interpreted as a request for a value greater than Integer.MAX_VALUE
+      // We throw OOM because that is what java.io.ByteArrayOutputStream also does
+      throw new OutOfMemoryError("Size of data exceeded Integer.MAX_VALUE (" + e.getMessage() + ")");
+    }
 
     if (bytesUsed == 0) {
       nextSlabSize = initialSlabSize;
@@ -300,7 +309,7 @@ public class CapacityByteArrayOutputStream extends OutputStream {
    * @param value the value to replace it with
    */
   public void setByte(long index, byte value) {
-    checkArgument(index < bytesUsed, "Index: " + index + " is >= the current size of: " + bytesUsed);
+    checkArgument(index < bytesUsed, "Index: %d is >= the current size of: %d", index, bytesUsed);
 
     long seen = 0;
     for (int i = 0; i < slabs.size(); i++) {
