@@ -22,7 +22,6 @@ import static java.util.Arrays.asList;
 
 import java.util.Collections;
 import java.util.List;
-
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.parquet.schema.GroupType;
@@ -32,6 +31,7 @@ import org.apache.parquet.schema.Type;
 
 /**
  * The mapping between an Arrow and a Parquet schema
+ *
  * @see SchemaConverter
  */
 public class SchemaMapping {
@@ -64,13 +64,20 @@ public class SchemaMapping {
 
   /**
    * To traverse a schema mapping
+   *
    * @param <T> the Java return type of the visitor
    */
   public interface TypeMappingVisitor<T> {
     T visit(PrimitiveTypeMapping primitiveTypeMapping);
+
     T visit(StructTypeMapping structTypeMapping);
+
     T visit(UnionTypeMapping unionTypeMapping);
+
     T visit(ListTypeMapping listTypeMapping);
+
+    T visit(MapTypeMapping mapTypeMapping);
+
     T visit(RepeatedTypeMapping repeatedTypeMapping);
   }
 
@@ -81,7 +88,7 @@ public class SchemaMapping {
 
     private final Field arrowField;
     private final Type parquetType;
-    private List<TypeMapping> children;
+    private final List<TypeMapping> children;
 
     TypeMapping(Field arrowField, Type parquetType, List<TypeMapping> children) {
       super();
@@ -103,7 +110,6 @@ public class SchemaMapping {
     }
 
     public abstract <T> T accept(TypeMappingVisitor<T> visitor);
-
   }
 
   /**
@@ -111,7 +117,7 @@ public class SchemaMapping {
    */
   public static class PrimitiveTypeMapping extends TypeMapping {
     public PrimitiveTypeMapping(Field arrowField, PrimitiveType parquetType) {
-      super(arrowField, parquetType, Collections.<TypeMapping>emptyList());
+      super(arrowField, parquetType, Collections.emptyList());
     }
 
     @Override
@@ -156,7 +162,7 @@ public class SchemaMapping {
     private final TypeMapping child;
 
     public ListTypeMapping(Field arrowField, List3Levels list3Levels, TypeMapping child) {
-      super(arrowField, list3Levels.getList(), asList(child));
+      super(arrowField, list3Levels.getList(), Collections.singletonList(child));
       this.list3Levels = list3Levels;
       this.child = child;
       if (list3Levels.getElement() != child.getParquetType()) {
@@ -170,6 +176,39 @@ public class SchemaMapping {
 
     public TypeMapping getChild() {
       return child;
+    }
+
+    @Override
+    public <T> T accept(TypeMappingVisitor<T> visitor) {
+      return visitor.visit(this);
+    }
+  }
+
+  /**
+   * mapping of a Map type and standard 3-level Map annotated Parquet type
+   */
+  public static class MapTypeMapping extends TypeMapping {
+    private final Map3Levels map3levels;
+    private final TypeMapping key;
+    private final TypeMapping value;
+
+    public MapTypeMapping(Field arrowField, Map3Levels map3levels, TypeMapping key, TypeMapping value) {
+      super(arrowField, map3levels.getMap(), asList(key, value));
+      this.map3levels = map3levels;
+      this.key = key;
+      this.value = value;
+    }
+
+    public Map3Levels getMap3Levels() {
+      return map3levels;
+    }
+
+    public TypeMapping getKey() {
+      return this.key;
+    }
+
+    public TypeMapping getValue() {
+      return this.value;
     }
 
     @Override

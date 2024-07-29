@@ -19,9 +19,9 @@
 
 package org.apache.parquet.hadoop.util;
 
+import java.io.IOException;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.parquet.io.PositionOutputStream;
-import java.io.IOException;
 
 public class HadoopPositionOutputStream extends PositionOutputStream {
   private final FSDataOutputStream wrapped;
@@ -61,6 +61,8 @@ public class HadoopPositionOutputStream extends PositionOutputStream {
 
   @Override
   public void close() throws IOException {
-    wrapped.close();
+    try (FSDataOutputStream fdos = wrapped) {
+      fdos.hflush();
+    }
   }
 }

@@ -21,9 +21,24 @@ package org.apache.parquet.hadoop.thrift;
 import java.io.ByteArrayInputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.BytesWritable;
+import org.apache.parquet.conf.HadoopParquetConfiguration;
+import org.apache.parquet.conf.ParquetConfiguration;
+import org.apache.parquet.hadoop.BadConfigurationException;
+import org.apache.parquet.hadoop.api.WriteSupport;
+import org.apache.parquet.io.ColumnIOFactory;
+import org.apache.parquet.io.MessageColumnIO;
+import org.apache.parquet.io.ParquetEncodingException;
+import org.apache.parquet.io.api.RecordConsumer;
+import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.thrift.BufferedProtocolReadToWrite;
+import org.apache.parquet.thrift.FieldIgnoredHandler;
+import org.apache.parquet.thrift.ParquetWriteProtocol;
+import org.apache.parquet.thrift.ProtocolPipe;
+import org.apache.parquet.thrift.ProtocolReadToWrite;
+import org.apache.parquet.thrift.ThriftSchemaConverter;
+import org.apache.parquet.thrift.struct.ThriftType.StructType;
 import org.apache.thrift.TBase;
 import org.apache.thrift.TException;
 import org.apache.thrift.protocol.TBinaryProtocol;
@@ -33,20 +48,6 @@ import org.apache.thrift.transport.TIOStreamTransport;
 import org.apache.thrift.transport.TTransportException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.parquet.hadoop.BadConfigurationException;
-import org.apache.parquet.hadoop.api.WriteSupport;
-import org.apache.parquet.io.ColumnIOFactory;
-import org.apache.parquet.io.MessageColumnIO;
-import org.apache.parquet.io.ParquetEncodingException;
-import org.apache.parquet.io.api.RecordConsumer;
-import org.apache.parquet.schema.MessageType;
-import org.apache.parquet.thrift.BufferedProtocolReadToWrite;
-import org.apache.parquet.thrift.ParquetWriteProtocol;
-import org.apache.parquet.thrift.ProtocolPipe;
-import org.apache.parquet.thrift.ProtocolReadToWrite;
-import org.apache.parquet.thrift.FieldIgnoredHandler;
-import org.apache.parquet.thrift.ThriftSchemaConverter;
-import org.apache.parquet.thrift.struct.ThriftType.StructType;
 
 public class ThriftBytesWriteSupport extends WriteSupport<BytesWritable> {
   private static final Logger LOG = LoggerFactory.getLogger(ThriftBytesWriteSupport.class);
@@ -57,30 +58,41 @@ public class ThriftBytesWriteSupport extends WriteSupport<BytesWritable> {
   }
 
   public static Class<TProtocolFactory> getTProtocolFactoryClass(Configuration conf) {
+    return getTProtocolFactoryClass(new HadoopParquetConfiguration(conf));
+  }
+
+  public static Class<TProtocolFactory> getTProtocolFactoryClass(ParquetConfiguration conf) {
     final String tProtocolClassName = conf.get(PARQUET_PROTOCOL_CLASS);
     if (tProtocolClassName == null) {
-      throw new BadConfigurationException("the protocol class conf is missing in job conf at " + PARQUET_PROTOCOL_CLASS);
+      throw new BadConfigurationException(
+          "the protocol class conf is missing in job conf at " + PARQUET_PROTOCOL_CLASS);
     }
     try {
       @SuppressWarnings("unchecked")
-      Class<TProtocolFactory> tProtocolFactoryClass = (Class<TProtocolFactory>)Class.forName(tProtocolClassName + "$Factory");
+      Class<TProtocolFactory> tProtocolFactoryClass =
+          (Class<TProtocolFactory>) Class.forName(tProtocolClassName + "$Factory");
       return tProtocolFactoryClass;
     } catch (ClassNotFoundException e) {
-      throw new BadConfigurationException("the Factory for class " + tProtocolClassName + " in job conf at " + PARQUET_PROTOCOL_CLASS + " could not be found", e);
+      throw new BadConfigurationException(
+          "the Factory for class " + tProtocolClassName + " in job conf at " + PARQUET_PROTOCOL_CLASS
+              + " could not be found",
+          e);
     }
   }
 
   private final boolean buffered;
+
   @SuppressWarnings("rawtypes") // TODO: fix type
   private final TBaseWriteSupport<?> thriftWriteSupport = new TBaseWriteSupport();
+
   private ProtocolPipe readToWrite;
   private TProtocolFactory protocolFactory;
-  private Class<? extends TBase<?,?>> thriftClass;
+  private Class<? extends TBase<?, ?>> thriftClass;
   private MessageType schema;
   private StructType thriftStruct;
   private ParquetWriteProtocol parquetWriteProtocol;
   private final FieldIgnoredHandler errorHandler;
-  private Configuration configuration;
+  private ParquetConfiguration configuration;
 
   public ThriftBytesWriteSupport() {
     this.buffered = true;
@@ -93,15 +105,25 @@ public class ThriftBytesWriteSupport extends WriteSupport<BytesWritable> {
    * boolean buffered, FieldIgnoredHandler errorHandler)} instead
    */
   @Deprecated
-  public ThriftBytesWriteSupport(TProtocolFactory protocolFactory,
-                                 Class<? extends TBase<?, ?>> thriftClass,
-                                 boolean buffered,
-                                 FieldIgnoredHandler errorHandler) {
+  public ThriftBytesWriteSupport(
+      TProtocolFactory protocolFactory,
+      Class<? extends TBase<?, ?>> thriftClass,
+      boolean buffered,
+      FieldIgnoredHandler errorHandler) {
     this(new Configuration(), protocolFactory, thriftClass, buffered, errorHandler);
   }
 
   public ThriftBytesWriteSupport(
       Configuration configuration,
+      TProtocolFactory protocolFactory,
+      Class<? extends TBase<?, ?>> thriftClass,
+      boolean buffered,
+      FieldIgnoredHandler errorHandler) {
+    this(new HadoopParquetConfiguration(configuration), protocolFactory, thriftClass, buffered, errorHandler);
+  }
+
+  public ThriftBytesWriteSupport(
+      ParquetConfiguration configuration,
       TProtocolFactory protocolFactory,
       Class<? extends TBase<?, ?>> thriftClass,
       boolean buffered,
@@ -124,6 +146,11 @@ public class ThriftBytesWriteSupport extends WriteSupport<BytesWritable> {
 
   @Override
   public WriteContext init(Configuration configuration) {
+    return init(new HadoopParquetConfiguration(configuration));
+  }
+
+  @Override
+  public WriteContext init(ParquetConfiguration configuration) {
     this.configuration = configuration;
     if (this.protocolFactory == null) {
       try {
@@ -149,6 +176,7 @@ public class ThriftBytesWriteSupport extends WriteSupport<BytesWritable> {
   }
 
   private static Method SET_READ_LENGTH;
+
   static {
     try {
       SET_READ_LENGTH = TBinaryProtocol.class.getMethod("setReadLength", int.class);
@@ -158,15 +186,16 @@ public class ThriftBytesWriteSupport extends WriteSupport<BytesWritable> {
   }
 
   private TProtocol protocol(BytesWritable record) throws TTransportException {
-    TProtocol protocol = protocolFactory.getProtocol(new TIOStreamTransport(new ByteArrayInputStream(record.getBytes())));
+    TProtocol protocol =
+        protocolFactory.getProtocol(new TIOStreamTransport(new ByteArrayInputStream(record.getBytes())));
 
     /* Reduce the chance of OOM when data is corrupted. When readBinary is called on TBinaryProtocol, it reads the length of the binary first,
-     so if the data is corrupted, it could read a big integer as the length of the binary and therefore causes OOM to happen.
-     Currently this fix only applies to TBinaryProtocol which has the setReadLength defined (thrift 0.7).
-      */
+    so if the data is corrupted, it could read a big integer as the length of the binary and therefore causes OOM to happen.
+    Currently this fix only applies to TBinaryProtocol which has the setReadLength defined (thrift 0.7).
+     */
     if (SET_READ_LENGTH != null && protocol instanceof TBinaryProtocol) {
       try {
-        SET_READ_LENGTH.invoke(protocol, new Object[]{record.getLength()});
+        SET_READ_LENGTH.invoke(protocol, new Object[] {record.getLength()});
       } catch (IllegalAccessException | IllegalArgumentException | InvocationTargetException e) {
         LOG.warn("setReadLength should not throw an exception", e);
         SET_READ_LENGTH = null;
@@ -179,8 +208,7 @@ public class ThriftBytesWriteSupport extends WriteSupport<BytesWritable> {
   @Override
   public void prepareForWrite(RecordConsumer recordConsumer) {
     final MessageColumnIO columnIO = new ColumnIOFactory().getColumnIO(schema);
-    parquetWriteProtocol = new ParquetWriteProtocol(
-        configuration, recordConsumer, columnIO, thriftStruct);
+    parquetWriteProtocol = new ParquetWriteProtocol(configuration, recordConsumer, columnIO, thriftStruct);
     thriftWriteSupport.prepareForWrite(recordConsumer);
   }
 
@@ -192,5 +220,4 @@ public class ThriftBytesWriteSupport extends WriteSupport<BytesWritable> {
       throw new ParquetEncodingException(e);
     }
   }
-
 }

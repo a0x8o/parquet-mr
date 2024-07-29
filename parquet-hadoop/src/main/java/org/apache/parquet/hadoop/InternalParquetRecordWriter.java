@@ -25,7 +25,6 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
-
 import org.apache.parquet.column.ColumnWriteStore;
 import org.apache.parquet.column.ParquetProperties;
 import org.apache.parquet.column.values.bloomfilter.BloomFilterWriteStore;
@@ -38,6 +37,7 @@ import org.apache.parquet.io.ColumnIOFactory;
 import org.apache.parquet.io.MessageColumnIO;
 import org.apache.parquet.io.api.RecordConsumer;
 import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.util.AutoCloseables;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -65,17 +65,18 @@ class InternalParquetRecordWriter<T> {
   private ColumnChunkPageWriteStore pageStore;
   private BloomFilterWriteStore bloomFilterWriteStore;
   private RecordConsumer recordConsumer;
-  
+
   private InternalFileEncryptor fileEncryptor;
   private int rowGroupOrdinal;
+  private boolean aborted;
 
   /**
    * @param parquetFileWriter the file to write to
-   * @param writeSupport the class to convert incoming records
-   * @param schema the schema of the records
-   * @param extraMetaData extra meta data to write in the footer of the file
-   * @param rowGroupSize the size of a block in the file (this will be approximate)
-   * @param compressor the codec used to compress
+   * @param writeSupport      the class to convert incoming records
+   * @param schema            the schema of the records
+   * @param extraMetaData     extra meta data to write in the footer of the file
+   * @param rowGroupSize      the size of a block in the file (this will be approximate)
+   * @param compressor        the codec used to compress
    */
   public InternalParquetRecordWriter(
       ParquetFileWriter parquetFileWriter,
@@ -107,9 +108,14 @@ class InternalParquetRecordWriter<T> {
   }
 
   private void initStore() {
-    ColumnChunkPageWriteStore columnChunkPageWriteStore = new ColumnChunkPageWriteStore(compressor,
-        schema, props.getAllocator(), props.getColumnIndexTruncateLength(), props.getPageWriteChecksumEnabled(),
-        fileEncryptor, rowGroupOrdinal);
+    ColumnChunkPageWriteStore columnChunkPageWriteStore = new ColumnChunkPageWriteStore(
+        compressor,
+        schema,
+        props.getAllocator(),
+        props.getColumnIndexTruncateLength(),
+        props.getPageWriteChecksumEnabled(),
+        fileEncryptor,
+        rowGroupOrdinal);
     pageStore = columnChunkPageWriteStore;
     bloomFilterWriteStore = columnChunkPageWriteStore;
 
@@ -121,23 +127,35 @@ class InternalParquetRecordWriter<T> {
 
   public void close() throws IOException, InterruptedException {
     if (!closed) {
-      flushRowGroupToStore();
-      FinalizedWriteContext finalWriteContext = writeSupport.finalizeWrite();
-      Map<String, String> finalMetadata = new HashMap<String, String>(extraMetaData);
-      String modelName = writeSupport.getName();
-      if (modelName != null) {
-        finalMetadata.put(ParquetWriter.OBJECT_MODEL_NAME_PROP, modelName);
+      try {
+        if (aborted) {
+          return;
+        }
+        flushRowGroupToStore();
+        FinalizedWriteContext finalWriteContext = writeSupport.finalizeWrite();
+        Map<String, String> finalMetadata = new HashMap<String, String>(extraMetaData);
+        String modelName = writeSupport.getName();
+        if (modelName != null) {
+          finalMetadata.put(ParquetWriter.OBJECT_MODEL_NAME_PROP, modelName);
+        }
+        finalMetadata.putAll(finalWriteContext.getExtraMetaData());
+        parquetFileWriter.end(finalMetadata);
+      } finally {
+        AutoCloseables.uncheckedClose(columnStore, pageStore, bloomFilterWriteStore, parquetFileWriter);
+        closed = true;
       }
-      finalMetadata.putAll(finalWriteContext.getExtraMetaData());
-      parquetFileWriter.end(finalMetadata);
-      closed = true;
     }
   }
 
   public void write(T value) throws IOException, InterruptedException {
-    writeSupport.write(value);
-    ++ recordCount;
-    checkBlockSizeReached();
+    try {
+      writeSupport.write(value);
+      ++recordCount;
+      checkBlockSizeReached();
+    } catch (Throwable t) {
+      aborted = true;
+      throw t;
+    }
   }
 
   /**
@@ -148,7 +166,9 @@ class InternalParquetRecordWriter<T> {
   }
 
   private void checkBlockSizeReached() throws IOException {
-    if (recordCount >= recordCountForNextMemCheck) { // checking the memory size is relatively expensive, so let's not do it for every record.
+    if (recordCount
+        >= recordCountForNextMemCheck) { // checking the memory size is relatively expensive, so let's not do it
+      // for every record.
       long memSize = columnStore.getBufferedSize();
       long recordSize = memSize / recordCount;
       // flush the row group if it is within ~2 records of the limit
@@ -157,42 +177,47 @@ class InternalParquetRecordWriter<T> {
         LOG.debug("mem size {} > {}: flushing {} records to disk.", memSize, nextRowGroupSize, recordCount);
         flushRowGroupToStore();
         initStore();
-        recordCountForNextMemCheck = min(max(props.getMinRowCountForPageSizeCheck(), recordCount / 2),
-          props.getMaxRowCountForPageSizeCheck());
+        recordCountForNextMemCheck = min(
+            max(props.getMinRowCountForPageSizeCheck(), recordCount / 2),
+            props.getMaxRowCountForPageSizeCheck());
         this.lastRowGroupEndPos = parquetFileWriter.getPos();
       } else {
         recordCountForNextMemCheck = min(
-            max(props.getMinRowCountForPageSizeCheck(),
-              (recordCount + (long)(nextRowGroupSize / ((float)recordSize))) / 2), // will check halfway
-            recordCount + props.getMaxRowCountForPageSizeCheck() // will not look more than max records ahead
+            max(
+                props.getMinRowCountForPageSizeCheck(),
+                (recordCount + (long) (nextRowGroupSize / ((float) recordSize)))
+                    / 2), // will check halfway
+            recordCount
+                + props.getMaxRowCountForPageSizeCheck() // will not look more than max records ahead
             );
         LOG.debug("Checked mem at {} will check again at: {}", recordCount, recordCountForNextMemCheck);
       }
     }
   }
 
-  private void flushRowGroupToStore()
-      throws IOException {
-    recordConsumer.flush();
-    LOG.debug("Flushing mem columnStore to file. allocated memory: {}", columnStore.getAllocatedSize());
-    if (columnStore.getAllocatedSize() > (3 * rowGroupSizeThreshold)) {
-      LOG.warn("Too much memory used: {}", columnStore.memUsageString());
-    }
+  private void flushRowGroupToStore() throws IOException {
+    try {
+      recordConsumer.flush();
+      LOG.debug("Flushing mem columnStore to file. allocated memory: {}", columnStore.getAllocatedSize());
+      if (columnStore.getAllocatedSize() > (3 * rowGroupSizeThreshold)) {
+        LOG.warn("Too much memory used: {}", columnStore.memUsageString());
+      }
 
-    if (recordCount > 0) {
-      rowGroupOrdinal++;
-      parquetFileWriter.startBlock(recordCount);
-      columnStore.flush();
-      pageStore.flushToFileWriter(parquetFileWriter);
-      recordCount = 0;
-      parquetFileWriter.endBlock();
-      this.nextRowGroupSize = Math.min(
-          parquetFileWriter.getNextRowGroupSize(),
-          rowGroupSizeThreshold);
+      if (recordCount > 0) {
+        rowGroupOrdinal++;
+        parquetFileWriter.startBlock(recordCount);
+        columnStore.flush();
+        pageStore.flushToFileWriter(parquetFileWriter);
+        recordCount = 0;
+        parquetFileWriter.endBlock();
+        this.nextRowGroupSize = Math.min(parquetFileWriter.getNextRowGroupSize(), rowGroupSizeThreshold);
+      }
+    } finally {
+      AutoCloseables.uncheckedClose(columnStore, pageStore, bloomFilterWriteStore);
+      columnStore = null;
+      pageStore = null;
+      bloomFilterWriteStore = null;
     }
-
-    columnStore = null;
-    pageStore = null;
   }
 
   long getRowGroupSizeThreshold() {

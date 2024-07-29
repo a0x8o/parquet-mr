@@ -1,4 +1,4 @@
-/* 
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *   http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -23,9 +23,9 @@ import static org.apache.parquet.schema.MessageTypeParser.parseMessageType;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
-
 import org.apache.hadoop.conf.Configuration;
-
+import org.apache.parquet.conf.HadoopParquetConfiguration;
+import org.apache.parquet.conf.ParquetConfiguration;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.example.data.GroupWriter;
 import org.apache.parquet.hadoop.api.WriteSupport;
@@ -41,7 +41,12 @@ public class GroupWriteSupport extends WriteSupport<Group> {
   }
 
   public static MessageType getSchema(Configuration configuration) {
-    return parseMessageType(Objects.requireNonNull(configuration.get(PARQUET_EXAMPLE_SCHEMA), PARQUET_EXAMPLE_SCHEMA));
+    return getSchema(new HadoopParquetConfiguration(configuration));
+  }
+
+  public static MessageType getSchema(ParquetConfiguration configuration) {
+    return parseMessageType(
+        Objects.requireNonNull(configuration.get(PARQUET_EXAMPLE_SCHEMA), PARQUET_EXAMPLE_SCHEMA));
   }
 
   private MessageType schema;
@@ -68,6 +73,11 @@ public class GroupWriteSupport extends WriteSupport<Group> {
 
   @Override
   public org.apache.parquet.hadoop.api.WriteSupport.WriteContext init(Configuration configuration) {
+    return init(new HadoopParquetConfiguration(configuration));
+  }
+
+  @Override
+  public org.apache.parquet.hadoop.api.WriteSupport.WriteContext init(ParquetConfiguration configuration) {
     // if present, prefer the schema passed to the constructor
     if (schema == null) {
       schema = getSchema(configuration);
@@ -84,5 +94,4 @@ public class GroupWriteSupport extends WriteSupport<Group> {
   public void write(Group record) {
     groupWriter.write(record);
   }
-
 }

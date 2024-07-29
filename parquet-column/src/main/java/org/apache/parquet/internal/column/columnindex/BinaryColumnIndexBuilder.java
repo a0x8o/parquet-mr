@@ -21,7 +21,6 @@ package org.apache.parquet.internal.column.columnindex;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
-
 import org.apache.parquet.filter2.predicate.Statistics;
 import org.apache.parquet.io.api.Binary;
 import org.apache.parquet.schema.PrimitiveComparator;
@@ -136,5 +135,12 @@ class BinaryColumnIndexBuilder extends ColumnIndexBuilder {
   @Override
   int sizeOf(Object value) {
     return ((Binary) value).length();
+  }
+
+  @Override
+  public long getMinMaxSize() {
+    long minSizesSum = minValues.stream().mapToLong(Binary::length).sum();
+    long maxSizesSum = maxValues.stream().mapToLong(Binary::length).sum();
+    return minSizesSum + maxSizesSum;
   }
 }

@@ -1,4 +1,4 @@
-/* 
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *   http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -19,9 +19,8 @@
 package org.apache.parquet.hadoop.api;
 
 import java.util.Map;
-
 import org.apache.hadoop.conf.Configuration;
-
+import org.apache.parquet.conf.ParquetConfiguration;
 import org.apache.parquet.io.api.RecordMaterializer;
 import org.apache.parquet.schema.MessageType;
 
@@ -47,6 +46,15 @@ public class DelegatingReadSupport<T> extends ReadSupport<T> {
   @Override
   public RecordMaterializer<T> prepareForRead(
       Configuration configuration,
+      Map<String, String> keyValueMetaData,
+      MessageType fileSchema,
+      ReadSupport.ReadContext readContext) {
+    return delegate.prepareForRead(configuration, keyValueMetaData, fileSchema, readContext);
+  }
+
+  @Override
+  public RecordMaterializer<T> prepareForRead(
+      ParquetConfiguration configuration,
       Map<String, String> keyValueMetaData,
       MessageType fileSchema,
       ReadSupport.ReadContext readContext) {

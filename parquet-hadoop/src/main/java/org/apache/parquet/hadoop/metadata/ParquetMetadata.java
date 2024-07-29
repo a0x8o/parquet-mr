@@ -18,17 +18,14 @@
  */
 package org.apache.parquet.hadoop.metadata;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectWriter;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import java.io.IOException;
 import java.io.StringReader;
 import java.io.StringWriter;
 import java.util.List;
-
-import com.fasterxml.jackson.core.JsonGenerationException;
-import com.fasterxml.jackson.core.JsonParseException;
-import com.fasterxml.jackson.databind.JsonMappingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-
 
 /**
  * Meta Data block stored in the footer of the file
@@ -37,6 +34,14 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 public class ParquetMetadata {
 
   private static final ObjectMapper objectMapper = new ObjectMapper();
+
+  static {
+    // Enable FAIL_ON_EMPTY_BEANS on objectmapper. Without this feature parquet-casdacing tests fail,
+    // because LogicalTypeAnnotation implementations are classes without any property.
+    objectMapper.disable(SerializationFeature.FAIL_ON_EMPTY_BEANS);
+    // Add support for Java 8 Optional
+    objectMapper.registerModule(new Jdk8Module());
+  }
 
   /**
    * @param parquetMetaData an instance of parquet metadata to convert
@@ -47,7 +52,6 @@ public class ParquetMetadata {
   }
 
   /**
-   *
    * @param parquetMetaData an instance of parquet metadata to convert
    * @return the pretty printed json representation
    */
@@ -57,18 +61,23 @@ public class ParquetMetadata {
 
   private static String toJSON(ParquetMetadata parquetMetaData, boolean isPrettyPrint) {
     try (StringWriter stringWriter = new StringWriter()) {
-      if (isPrettyPrint) {
-        Object objectToPrint;
-        if (parquetMetaData.getFileMetaData() == null ||
-            parquetMetaData.getFileMetaData().getEncryptionType() == FileMetaData.EncryptionType.UNENCRYPTED) {
-          objectToPrint = parquetMetaData;
-        } else {
-          objectToPrint = parquetMetaData.getFileMetaData();
-        }
-        objectMapper.writerWithDefaultPrettyPrinter().writeValue(stringWriter, objectToPrint);
+      Object objectToPrint;
+      if (parquetMetaData.getFileMetaData() == null
+          || parquetMetaData.getFileMetaData().getEncryptionType()
+              == FileMetaData.EncryptionType.UNENCRYPTED) {
+        objectToPrint = parquetMetaData;
       } else {
-        objectMapper.writeValue(stringWriter, parquetMetaData);
+        objectToPrint = parquetMetaData.getFileMetaData();
       }
+
+      ObjectWriter writer;
+      if (isPrettyPrint) {
+        writer = objectMapper.writerWithDefaultPrettyPrinter();
+      } else {
+        writer = objectMapper.writer();
+      }
+
+      writer.writeValue(stringWriter, objectToPrint);
       return stringWriter.toString();
     } catch (IOException e) {
       throw new RuntimeException(e);
@@ -76,7 +85,6 @@ public class ParquetMetadata {
   }
 
   /**
-   *
    * @param json the json representation
    * @return the parsed object
    */
@@ -92,9 +100,8 @@ public class ParquetMetadata {
   private final List<BlockMetaData> blocks;
 
   /**
-   *
    * @param fileMetaData file level metadata
-   * @param blocks block level metadata
+   * @param blocks       block level metadata
    */
   public ParquetMetadata(FileMetaData fileMetaData, List<BlockMetaData> blocks) {
     this.fileMetaData = fileMetaData;
@@ -102,7 +109,6 @@ public class ParquetMetadata {
   }
 
   /**
-   *
    * @return block level metadata
    */
   public List<BlockMetaData> getBlocks() {
@@ -110,17 +116,14 @@ public class ParquetMetadata {
   }
 
   /**
-   *
    * @return file level meta data
    */
   public FileMetaData getFileMetaData() {
     return fileMetaData;
   }
 
-
   @Override
   public String toString() {
-    return "ParquetMetaData{"+fileMetaData+", blocks: "+blocks+"}";
+    return "ParquetMetaData{" + fileMetaData + ", blocks: " + blocks + "}";
   }
-
 }

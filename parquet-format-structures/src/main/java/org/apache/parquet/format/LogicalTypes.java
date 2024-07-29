@@ -33,7 +33,7 @@ public class LogicalTypes {
   }
 
   public static final LogicalType UTF8 = LogicalType.STRING(new StringType());
-  public static final LogicalType MAP  = LogicalType.MAP(new MapType());
+  public static final LogicalType MAP = LogicalType.MAP(new MapType());
   public static final LogicalType LIST = LogicalType.LIST(new ListType());
   public static final LogicalType ENUM = LogicalType.ENUM(new EnumType());
   public static final LogicalType DATE = LogicalType.DATE(new DateType());
@@ -52,4 +52,5 @@ public class LogicalTypes {
   public static final LogicalType UNKNOWN = LogicalType.UNKNOWN(new NullType());
   public static final LogicalType JSON = LogicalType.JSON(new JsonType());
   public static final LogicalType BSON = LogicalType.BSON(new BsonType());
+  public static final LogicalType FLOAT16 = LogicalType.FLOAT16(new Float16Type());
 }

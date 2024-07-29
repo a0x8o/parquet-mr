@@ -19,6 +19,9 @@
 
 package org.apache.parquet.hadoop.util;
 
+import java.io.InputStream;
+import java.util.Objects;
+import java.util.function.Function;
 import org.apache.hadoop.fs.ByteBufferReadable;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -28,9 +31,6 @@ import org.apache.parquet.util.DynMethods;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.InputStream;
-import java.util.Objects;
-
 /**
  * Convenience methods to get Parquet abstractions for Hadoop data streams.
  */
@@ -38,9 +38,7 @@ public class HadoopStreams {
 
   private static final Logger LOG = LoggerFactory.getLogger(HadoopStreams.class);
 
-  private static final DynMethods.UnboundMethod hasCapabilitiesMethod =
-    new DynMethods
-      .Builder("hasCapabilities")
+  private static final DynMethods.UnboundMethod hasCapabilitiesMethod = new DynMethods.Builder("hasCapabilities")
       .impl(FSDataInputStream.class, "hasCapabilities", String.class)
       .orNoop()
       .build();
@@ -67,29 +65,30 @@ public class HadoopStreams {
       }
     }
 
-    return unwrapByteBufferReadableLegacy(stream);
+    return unwrapByteBufferReadableLegacy(stream).apply(stream);
   }
 
   /**
    * Is the inner stream byte buffer readable?
    * The test is 'the stream is not FSDataInputStream
    * and implements ByteBufferReadable'
-   *
+   * <p>
    * This logic is only used for Hadoop <2.9.x, and <3.x.x
    *
    * @param stream stream to probe
    * @return A H2SeekableInputStream to access, or H1SeekableInputStream if the stream is not seekable
    */
-  private static SeekableInputStream unwrapByteBufferReadableLegacy(FSDataInputStream stream) {
+  private static Function<FSDataInputStream, SeekableInputStream> unwrapByteBufferReadableLegacy(
+      FSDataInputStream stream) {
     InputStream wrapped = stream.getWrappedStream();
     if (wrapped instanceof FSDataInputStream) {
       LOG.debug("Checking on wrapped stream {} of {} whether is ByteBufferReadable", wrapped, stream);
       return unwrapByteBufferReadableLegacy(((FSDataInputStream) wrapped));
     }
     if (stream.getWrappedStream() instanceof ByteBufferReadable) {
-      return new H2SeekableInputStream(stream);
+      return H2SeekableInputStream::new;
     } else {
-      return new H1SeekableInputStream(stream);
+      return H1SeekableInputStream::new;
     }
   }
 
@@ -97,11 +96,11 @@ public class HadoopStreams {
    * Is the inner stream byte buffer readable?
    * The test is 'the stream is not FSDataInputStream
    * and implements ByteBufferReadable'
-   *
+   * <p>
    * That is: all streams which implement ByteBufferReadable
    * other than FSDataInputStream successfully support read(ByteBuffer).
    * This is true for all filesystem clients the hadoop codebase.
-   *
+   * <p>
    * In hadoop 3.3.0+, the StreamCapabilities probe can be used to
    * check this: only those streams which provide the read(ByteBuffer)
    * semantics MAY return true for the probe "in:readbytebuffer";
@@ -132,7 +131,6 @@ public class HadoopStreams {
     }
     return wrapped instanceof ByteBufferReadable;
   }
-
 
   /**
    * Wraps a {@link FSDataOutputStream} in a {@link PositionOutputStream}
